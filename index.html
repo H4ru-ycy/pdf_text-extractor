@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PDF Text Extractor</title>
+<title>PDFテキスト抽出 -PDF Text Extractor-</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
@@ -19,6 +19,7 @@
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 "Noto Sans JP","Figtree",system-ui,sans-serif;overflow-x:clip}
 .wrap{max-width:900px;margin:0 auto;padding:clamp(18px,4vw,40px) max(4vw,14px) 60px}
 h1{font:800 clamp(28px,6vw,40px)/1.1 "Figtree","Noto Sans JP",sans-serif;margin:0 0 6px;text-wrap:balance}
+h1 .en{display:inline-block;font-size:.5em;font-weight:700;color:var(--mute);margin-left:.4em;white-space:nowrap}
 h1 span{display:inline-block;width:.55em;height:.55em;border-radius:50%;background:var(--blue);margin-right:.3em;vertical-align:.08em}
 .lead{color:var(--mute);margin:0 0 18px;font-size:15px}
 .drop{display:flex;align-items:center;gap:14px;border:2px dashed var(--line);border-radius:14px;padding:18px;cursor:pointer;background:var(--panel);transition:border-color .15s}
@@ -94,7 +95,7 @@ body.vt #out{height:min(72vh,640px);min-height:0}body.vt .snip textarea{height:2
 </head>
 <body>
 <div class="wrap">
-  <h1><span></span>PDF Text Extractor</h1>
+  <h1><span></span>PDFテキスト抽出<small class="en">-PDF Text Extractor-</small></h1>
   <p class="lead">PDFの文字を読み取ってコピーできます。範囲を囲んで部分的に抜き出したり、画像だけのページは見ながら手入力もできます。ファイルは端末の中だけで処理され、どこにも送信されません。</p>
 
   <label class="drop" id="drop">
@@ -118,7 +119,6 @@ body.vt #out{height:min(72vh,640px);min-height:0}body.vt .snip textarea{height:2
     <div class="checks">
       <label><input type="checkbox" id="optSp" checked>日本語の間のすき間を詰める</label>
       <label><input type="checkbox" id="optJoin">行末の改行をつなげて段落にする</label>
-      <label><input type="checkbox" id="optMark" checked>ページの区切りを入れる</label>
       <label><input type="checkbox" id="optVt">結果を縦書きで表示</label>
     </div>
     <p class="note" id="emptyNote"></p>
@@ -178,7 +178,7 @@ async function copyText(s){
 }
 function status(html,pct){$('status').innerHTML=html+(pct!=null?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')}
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const OPT_KEYS=['mode','optSp','optJoin','optMark','optVt'];
+const OPT_KEYS=['mode','optSp','optJoin','optVt'];
 try{const o=JSON.parse(localStorage.getItem('pdftext-opts')||'{}');OPT_KEYS.forEach(k=>{if(k in o){const el=$(k);el.type==='checkbox'?el.checked=o[k]:el.value=o[k]}})}catch(e){}
 function applyVt(){document.body.classList.toggle('vt',$('optVt').checked)}
 applyVt();
@@ -291,7 +291,7 @@ function polish(lines,o){
   }
   return lines.join('\n').replace(/\n{3,}/g,'\n\n').trim();
 }
-const opts=()=>({mode:$('mode').value,sp:$('optSp').checked,join:$('optJoin').checked,mark:$('optMark').checked});
+const opts=()=>({mode:$('mode').value,sp:$('optSp').checked,join:$('optJoin').checked});
 function pageText(p,o){return polish(arrange(p.items,o.mode),o)}
 function parseRange(s,n){
   s=(s||'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)).replace(/[－～〜ー]/g,'-').replace(/[、，]/g,',').trim();
@@ -303,9 +303,9 @@ function parseRange(s,n){
 }
 function compose(){
   if(!pages.length)return;
-  const o=opts(),list=parseRange($('range').value,pages.length),parts=[],empty=[];
-  for(const n of list){const p=pages[n-1],t=pageText(p,o);if(!t)empty.push(n);if(o.mark)parts.push(`── ${n}ページ ──\n`+(t||'（文字データなし）'));else if(t)parts.push(t)}
-  $('out').value=parts.join('\n\n');edited=false;$('editNote').classList.remove('on');$('check').classList.remove('on');
+  const o=opts(),list=parseRange($('range').value,pages.length),lines=[],empty=[];
+  for(const n of list){const l=arrange(pages[n-1].items,o.mode);if(!l.length)empty.push(n);else lines.push(...l)}
+  $('out').value=polish(lines,o);edited=false;$('editNote').classList.remove('on');$('check').classList.remove('on');
   const en=$('emptyNote');
   if(empty.length){en.textContent=`文字データのないページがあります：${empty.join(', ')}ページ。スキャン画像などは文字として読み取れないため、「範囲を指定・手入力」タブでページを見ながら手入力してください。`;en.classList.add('on')}else en.classList.remove('on');
   updStats();
