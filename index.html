@@ -85,6 +85,8 @@ textarea{width:100%;font:16px/1.75 "Noto Sans JP",system-ui,sans-serif;color:var
 .ctx ins{background:light-dark(#d3f3e2,#123b28);color:var(--green);text-decoration:line-through;padding:0 1px}
 .ctx .gap{color:var(--mute)}
 .hunk .row .btn{min-height:38px;padding:6px 12px;font-size:14px}
+body.vt #out,body.vt .snip textarea{writing-mode:vertical-rl;text-orientation:mixed;overflow-x:auto;overflow-y:hidden;resize:none;line-height:1.9;letter-spacing:.04em}
+body.vt #out{height:min(72vh,640px);min-height:0}body.vt .snip textarea{height:260px}
 .toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,20px);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:24px;font-size:15px;opacity:0;pointer-events:none;transition:.2s;max-width:90vw;text-align:center}
 .toast.on{opacity:1;transform:translate(-50%,0)}
 @media(prefers-reduced-motion:reduce){.toast,.bar i{transition:none}}
@@ -117,6 +119,7 @@ textarea{width:100%;font:16px/1.75 "Noto Sans JP",system-ui,sans-serif;color:var
       <label><input type="checkbox" id="optSp" checked>日本語の間のすき間を詰める</label>
       <label><input type="checkbox" id="optJoin">行末の改行をつなげて段落にする</label>
       <label><input type="checkbox" id="optMark" checked>ページの区切りを入れる</label>
+      <label><input type="checkbox" id="optVt">結果を縦書きで表示</label>
     </div>
     <p class="note" id="emptyNote"></p>
     <p class="note" id="editNote">結果を手で編集したので、設定の変更を自動では反映していません。<button class="btn" id="regen">設定を反映する（編集は消えます）</button></p>
@@ -175,8 +178,10 @@ async function copyText(s){
 }
 function status(html,pct){$('status').innerHTML=html+(pct!=null?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')}
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const OPT_KEYS=['mode','optSp','optJoin','optMark'];
+const OPT_KEYS=['mode','optSp','optJoin','optMark','optVt'];
 try{const o=JSON.parse(localStorage.getItem('pdftext-opts')||'{}');OPT_KEYS.forEach(k=>{if(k in o){const el=$(k);el.type==='checkbox'?el.checked=o[k]:el.value=o[k]}})}catch(e){}
+function applyVt(){document.body.classList.toggle('vt',$('optVt').checked)}
+applyVt();
 function saveOpts(){try{const o={};OPT_KEYS.forEach(k=>{const el=$(k);o[k]=el.type==='checkbox'?el.checked:el.value});localStorage.setItem('pdftext-opts',JSON.stringify(o))}catch(e){}}
 
 /* ---------- 読み込み ---------- */
@@ -212,7 +217,7 @@ async function extractPage(num){
     if(!it.str||!it.str.trim()&&!it.str.includes('　'))continue;
     const t=it.transform,fh=Math.hypot(t[2],t[3])||Math.hypot(t[0],t[1])||10;
     const vert=!!(tc.styles[it.fontName]&&tc.styles[it.fontName].vertical);
-    items.push({str:it.str,t,x:t[4],y:t[5],w:it.width||0,h:it.height||fh,fh,vert});
+    items.push({str:normV(it.str),t,x:t[4],y:t[5],w:it.width||0,h:it.height||fh,fh,vert});
   }
   return {num,items};
 }
@@ -225,6 +230,8 @@ function isVertical(items){
   for(let i=1;i<items.length;i++){const a=items[i-1],b=items[i],dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);if(dx<a.fh*.3&&dy>0)sy++;else if(dy<a.fh*.3)sx++}
   return sy>5&&sy>sx*1.5;
 }
+const VMAP={'\uFE10':'，','\uFE11':'、','\uFE12':'。','\uFE13':'：','\uFE14':'；','\uFE15':'！','\uFE16':'？','\uFE17':'〖','\uFE18':'〗','\uFE19':'…','\u22EE':'…','\uFE30':'‥','\uFE31':'―','\uFE32':'―','\uFE33':'＿','\uFE34':'＿','\uFE35':'（','\uFE36':'）','\uFE37':'｛','\uFE38':'｝','\uFE39':'〔','\uFE3A':'〕','\uFE3B':'【','\uFE3C':'】','\uFE3D':'《','\uFE3E':'》','\uFE3F':'〈','\uFE40':'〉','\uFE41':'「','\uFE42':'」','\uFE43':'『','\uFE44':'』','\uFE47':'［','\uFE48':'］'};
+const normV=s=>s.replace(/[\uFE10-\uFE19\uFE30-\uFE48\u22EE]/g,c=>VMAP[c]||c);
 const median=a=>{const s=a.slice().sort((x,y)=>x-y);return s[s.length>>1]||10};
 function layoutH(items){
   const m=median(items.map(i=>i.fh));
@@ -391,7 +398,7 @@ $('check').addEventListener('click',e=>{
   else if('re' in d)runCheck();
   else if(d.fix)applyFix([hunks[+d.fix]]);
   else if(d.ok){ignored.add(hunks[+d.ok].key);hunks.splice(+d.ok,1);showCheck([]);toast('この箇所は今後のチェックで表示しません')}
-  else if(d.loc){const h=hunks[+d.loc],o=$('out');o.focus();o.setSelectionRange(h.start,Math.max(h.end,h.start));const lh=parseFloat(getComputedStyle(o).lineHeight)||28;o.scrollTop=Math.max(0,o.value.slice(0,h.start).split('\n').length*lh-o.clientHeight/2)}
+  else if(d.loc){const h=hunks[+d.loc],o=$('out');o.focus();o.setSelectionRange(h.start,Math.max(h.end,h.start));if(!$('optVt').checked){const lh=parseFloat(getComputedStyle(o).lineHeight)||28;o.scrollTop=Math.max(0,o.value.slice(0,h.start).split('\n').length*lh-o.clientHeight/2)}}
   else if(d.pg){cur=hunks[+d.pg].page;tab(true)}
 });
 function staleCheck(){if($('check').classList.contains('on')){$('check').innerHTML='<h2>テキストが変わりました</h2><div class="row"><button class="btn pri" data-re>もう一度照合</button></div>'}}
@@ -404,7 +411,7 @@ function renderChips(){
   const o=opts();$('chipWrap').hidden=!pages.length;
   $('chips').innerHTML=pages.map(p=>`<button data-p="${p.num}" class="${p.items.length?'':'empty'}" aria-label="${p.num}ページをコピー">${p.num}</button>`).join('');
 }
-function optChanged(){saveOpts();if(!pages.length)return;if(edited)$('editNote').classList.add('on');else compose()}
+function optChanged(){saveOpts();applyVt();if(!pages.length)return;if(edited)$('editNote').classList.add('on');else compose()}
 
 /* ---------- ページ表示・範囲選択 ---------- */
 let vp=null;
@@ -473,7 +480,7 @@ const dz=$('drop');
 ['dragleave','drop'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.remove('over')}));
 dz.addEventListener('drop',e=>openFile(e.dataTransfer.files[0]));
 $('pwForm').addEventListener('submit',e=>{e.preventDefault();load($('pw').value)});
-OPT_KEYS.forEach(k=>$(k).addEventListener('change',optChanged));
+OPT_KEYS.forEach(k=>$(k).addEventListener('change',k==='optVt'?()=>{saveOpts();applyVt()}:optChanged));
 $('range').addEventListener('input',()=>{if(pages.length&&!edited)compose();else if(edited)$('editNote').classList.add('on')});
 $('regen').onclick=compose;
 $('out').addEventListener('input',()=>{edited=true;updStats();staleCheck()});
