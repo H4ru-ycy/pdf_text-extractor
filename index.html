@@ -114,6 +114,7 @@ body.vt #out{height:min(72vh,640px);min-height:0}body.vt .snip textarea{height:2
   <section class="panel on" id="pA" role="tabpanel">
     <div class="opts">
       <label class="f">文字の向き<select id="mode"><option value="auto">自動判定</option><option value="h">横書き</option><option value="v">縦書き（右→左）</option></select></label>
+      <label class="f">OCRの文字方向（文字化け・画像ページ用）<select id="ocrDir"><option value="v">縦書き（1段組み）</option><option value="v2">縦書き（2段組みなど・自動）</option><option value="h">横書き</option></select></label>
       <label class="f">読み取るページ<input type="text" id="range" placeholder="空欄ですべて（例: 1-3,5）" inputmode="text"></label>
     </div>
     <div class="checks">
@@ -141,11 +142,12 @@ body.vt #out{height:min(72vh,640px);min-height:0}body.vt .snip textarea{height:2
       <button class="btn" id="next" aria-label="次のページ">›</button>
       <select id="zoom" aria-label="拡大率" style="width:auto"><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option></select>
       <button class="btn" id="selBtn" aria-pressed="true">範囲選択 ON</button>
+      <button class="btn" id="ocrPageBtn" disabled>このページをOCR</button>
     </div>
     <div class="stage" id="stage"><div class="empty-v" id="emptyV">PDFを選ぶと、ここにページが表示されます</div>
       <div class="page" id="pageBox" hidden><canvas id="cv"></canvas><canvas id="hl"></canvas><div id="hit" class="sel"></div><div id="box"></div></div>
     </div>
-    <p class="hint">ページの上を指でなぞって四角く囲むと、その範囲の文字を下に抜き出します。スクロールしたいときは「範囲選択」をOFFに。文字データのないページ（スキャン画像など）は「手入力欄を追加」で見ながら打ち込めます。</p>
+    <p class="hint">ページの上を指でなぞって四角く囲むと、その範囲の文字を下に抜き出します。スクロールしたいときは「範囲選択」をOFFに。文字化けしているページや文字データのないページ（スキャン画像など）では、囲んだ範囲をOCRで読み取ります。「このページをOCR」でページ全体も読めます。手で打ち込むなら「手入力欄を追加」を使ってください。</p>
     <div class="row" style="margin-top:12px">
       <button class="btn" id="addManual">手入力欄を追加</button>
       <button class="btn pri" id="copySnips" disabled>まとめてコピー</button>
@@ -178,7 +180,7 @@ async function copyText(s){
 }
 function status(html,pct){$('status').innerHTML=html+(pct!=null?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')}
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const OPT_KEYS=['mode','optSp','optJoin','optVt'];
+const OPT_KEYS=['mode','optSp','optJoin','optVt','ocrDir'];
 try{const o=JSON.parse(localStorage.getItem('pdftext-opts')||'{}');OPT_KEYS.forEach(k=>{if(k in o){const el=$(k);el.type==='checkbox'?el.checked=o[k]:el.value=o[k]}})}catch(e){}
 function applyVt(){document.body.classList.toggle('vt',$('optVt').checked)}
 applyVt();
@@ -200,7 +202,7 @@ async function load(password){
     status(`<b>${esc(fileName)}</b><span>開けませんでした（${esc(e&&e.message||e)}）</span>`);return;
   }
   $('pwForm').classList.remove('on');
-  pages=[];hl={};snips=[];ignored.clear();renderSnips();edited=false;$('editNote').classList.remove('on');
+  pages=[];hl={};snips=[];ignored.clear();ocrCache=null;renderSnips();edited=false;$('editNote').classList.remove('on');
   const n=doc.numPages;
   for(let i=1;i<=n;i++){
     status(`<b>${esc(fileName)}</b><span>${i} / ${n} ページを読み取り中</span>`,Math.round(i/n*100));
@@ -219,7 +221,9 @@ async function extractPage(num){
     const vert=!!(tc.styles[it.fontName]&&tc.styles[it.fontName].vertical);
     items.push({str:normV(it.str),t,x:t[4],y:t[5],w:it.width||0,h:it.height||fh,fh,vert});
   }
-  return {num,items};
+  const all=items.map(i=>i.str).join('').replace(/\s/g,'');
+  const bad=(all.match(/[\u0000-\u001F\u007F-\u00FF\uFFFD\uE000-\uF8FF]/g)||[]).length;
+  return {num,items,garbled:all.length>=10&&bad/all.length>.2};
 }
 
 /* ---------- 並べ直し ---------- */
@@ -292,7 +296,9 @@ function polish(lines,o){
   return lines.join('\n').replace(/\n{3,}/g,'\n\n').trim();
 }
 const opts=()=>({mode:$('mode').value,sp:$('optSp').checked,join:$('optJoin').checked});
-function pageText(p,o){return polish(arrange(p.items,o.mode),o)}
+function pageLines(p,mode){if(p.ocr)return p.ocr;if(p.garbled)return [];return arrange(p.items,mode)}
+const usable=p=>p.items.length&&!p.garbled;
+function pageText(p,o){return polish(pageLines(p,o.mode),o)}
 function parseRange(s,n){
   s=(s||'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)).replace(/[－～〜ー]/g,'-').replace(/[、，]/g,',').trim();
   if(!s)return Array.from({length:n},(_,i)=>i+1);
@@ -304,10 +310,11 @@ function parseRange(s,n){
 function compose(){
   if(!pages.length)return;
   const o=opts(),list=parseRange($('range').value,pages.length),lines=[],empty=[];
-  for(const n of list){const l=arrange(pages[n-1].items,o.mode);if(!l.length)empty.push(n);else lines.push(...l)}
+  const garb=[];for(const n of list){const p=pages[n-1],l=pageLines(p,o.mode);if(!l.length)(p.garbled?garb:empty).push(n);else lines.push(...l)}
   $('out').value=polish(lines,o);edited=false;$('editNote').classList.remove('on');$('check').classList.remove('on');
   const en=$('emptyNote');
-  if(empty.length){en.textContent=`文字データのないページがあります：${empty.join(', ')}ページ。スキャン画像などは文字として読み取れないため、「範囲を指定・手入力」タブでページを見ながら手入力してください。`;en.classList.add('on')}else en.classList.remove('on');
+  const need=garb.concat(empty).sort((a,b)=>a-b);
+  if(need.length){en.innerHTML=(garb.length?`文字化けしているページがあります：${garb.join(', ')}ページ（PDFのフォントに文字の対応表が入っていないため、文字データから正しく読めません）。`:'')+(empty.length?`文字データのないページがあります：${empty.join(', ')}ページ。`:'')+`<br>ページの画像から文字を読み取るOCRで読み取れます。読み取ったあとは誤りがないか確認してください。<div class="row" style="margin-top:8px"><button class="btn pri" id="ocrAll">${need.length}ページをOCRで読み取る</button></div>`;en.classList.add('on');$('ocrAll').onclick=()=>ocrPages(need)}else en.classList.remove('on');
   updStats();
 }
 /* ---------- PDFと照合 ---------- */
@@ -315,7 +322,7 @@ const WS=/[\s　]/;
 let hunks=[],ignored=new Set();
 function sourceChars(){
   const o=opts(),list=parseRange($('range').value,pages.length);let s='';const pg=[],empty=[];
-  for(const n of list){const t=arrange(pages[n-1].items,o.mode).join('');let c=0;for(const ch of t){if(WS.test(ch))continue;s+=ch;for(let u=0;u<ch.length;u++)pg.push(n);c++}if(!c)empty.push(n)}
+  for(const n of list){const t=pageLines(pages[n-1],o.mode).join('');let c=0;for(const ch of t){if(WS.test(ch))continue;s+=ch;for(let u=0;u<ch.length;u++)pg.push(n);c++}if(!c)empty.push(n)}
   return {s,pg,empty};
 }
 function targetChars(text){
@@ -409,7 +416,7 @@ function updStats(){
 }
 function renderChips(){
   const o=opts();$('chipWrap').hidden=!pages.length;
-  $('chips').innerHTML=pages.map(p=>`<button data-p="${p.num}" class="${p.items.length?'':'empty'}" aria-label="${p.num}ページをコピー">${p.num}</button>`).join('');
+  $('chips').innerHTML=pages.map(p=>`<button data-p="${p.num}" class="${usable(p)||p.ocr?'':'empty'}" aria-label="${p.num}ページをコピー">${p.num}</button>`).join('');
 }
 function optChanged(){saveOpts();applyVt();if(!pages.length)return;if(edited)$('editNote').classList.add('on');else compose()}
 
@@ -419,7 +426,7 @@ async function showPage(){
   if(!doc)return;
   cur=Math.min(Math.max(1,cur),doc.numPages);
   $('pgLabel').textContent=`${cur} / ${doc.numPages}`;$('prev').disabled=cur<=1;$('next').disabled=cur>=doc.numPages;
-  $('emptyV').hidden=true;$('pageBox').hidden=false;
+  $('emptyV').hidden=true;$('pageBox').hidden=false;$('ocrPageBtn').disabled=ocrBusy;
   const page=await doc.getPage(cur),base=page.getViewport({scale:1});
   const W=Math.max(200,$('stage').clientWidth-18),scale=W/base.width*(+$('zoom').value);
   vp=page.getViewport({scale});
@@ -450,12 +457,67 @@ function rect(a,b){return {x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),w:Math.abs(a.
 function moveBox(p){const r=rect(start,p);Object.assign(box.style,{left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px'})}
 function grab(r){
   const p=pages[cur-1];if(!p)return;
+  if(!usable(p)){ocrRegion(r);return}
   const sel=[],boxes=[];
   for(const it of p.items){const b=itemBox(it),cx=b.x+b.w/2,cy=b.y+b.h/2;if(cx>=r.x&&cx<=r.x+r.w&&cy>=r.y&&cy<=r.y+r.h){sel.push(it);boxes.push(b)}}
   if(!sel.length){toast(p.items.length?'囲んだ範囲に文字がありません':'このページには文字データがありません。手入力欄を使ってください');return}
   const o=opts();hl[cur]=(hl[cur]||[]).concat(boxes);drawHl();
   addSnip(cur,polish(arrange(sel,o.mode),{...o,join:o.join}));
   toast('抜き出しました');
+}
+/* ---------- OCR ---------- */
+let tw=null,twLang='',ocrLog=null,ocrCache=null,ocrBusy=false;
+function loadTess(){
+  if(window.Tesseract)return Promise.resolve();
+  return new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';sc.onload=res;sc.onerror=()=>rej(new Error('load'));document.head.appendChild(sc)});
+}
+async function worker(lang){
+  await loadTess();
+  if(tw&&twLang===lang)return tw;
+  if(tw){try{await tw.terminate()}catch(e){}tw=null}
+  tw=await Tesseract.createWorker(lang,1,{logger:m=>ocrLog&&ocrLog(m)});twLang=lang;return tw;
+}
+async function pageImage(n){
+  if(ocrCache&&ocrCache.n===n)return ocrCache;
+  const page=await doc.getPage(n),base=page.getViewport({scale:1}),sc=Math.min(5,2600/Math.max(base.width,base.height));
+  const v=page.getViewport({scale:sc}),c=document.createElement('canvas');c.width=Math.ceil(v.width);c.height=Math.ceil(v.height);
+  const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
+  await page.render({canvasContext:ctx,viewport:v}).promise;
+  return ocrCache={n,c,sc};
+}
+const ocrFail=e=>toast('OCRを使えませんでした。ネットにつながっているか、GitHubやCloudflareに置いたページで開いているか確認してください');
+async function recognize(img,psm){
+  const d=$('ocrDir').value,w=await worker(d==='h'?'jpn':'jpn_vert');
+  await w.setParameters({tessedit_pageseg_mode:psm||(d==='v'?'5':'3'),preserve_interword_spaces:'1'});
+  const r=await w.recognize(img);
+  return r.data.text.split('\n').map(l=>l.replace(/\s+$/,'')).filter((l,i,a)=>l||(a[i-1]&&a[i-1]!==''));
+}
+async function ocrPages(list){
+  if(ocrBusy)return;ocrBusy=true;
+  const btns=document.querySelectorAll('#ocrAll,#ocrPageBtn');btns.forEach(b=>b.disabled=true);
+  try{
+    for(let i=0;i<list.length;i++){
+      const n=list[i],head=`<b>${esc(fileName)}</b><span>OCR中 ${i+1} / ${list.length}（${n}ページ）</span>`;
+      status(head+'<span>準備中…</span>',Math.round(i/list.length*100));
+      ocrLog=m=>{if(m.status==='recognizing text')status(head,Math.round((i+m.progress)/list.length*100));else if(/load|initializ/.test(m.status))status(head+'<span>OCRの準備中（初回は時間がかかります）</span>',Math.round(i/list.length*100))};
+      const im=await pageImage(n);pages[n-1].ocr=await recognize(im.c);
+    }
+    status(`<b>${esc(fileName)}</b><span>${pages.length}ページ・OCR完了（誤りがないか確認してください）</span>`);
+    compose();renderChips();toast('OCRで読み取りました');
+  }catch(e){ocrFail(e);status(`<b>${esc(fileName)}</b><span>OCRを完了できませんでした</span>`)}
+  finally{ocrLog=null;ocrBusy=false;btns.forEach(b=>b.disabled=false)}
+}
+async function ocrRegion(r){
+  if(ocrBusy)return;ocrBusy=true;toast('OCRで読み取っています…');
+  try{
+    const im=await pageImage(cur),k=im.sc/vp.scale,c=document.createElement('canvas');
+    c.width=Math.max(1,Math.round(r.w*k));c.height=Math.max(1,Math.round(r.h*k));
+    c.getContext('2d').drawImage(im.c,r.x*k,r.y*k,c.width,c.height,0,0,c.width,c.height);
+    const d=$('ocrDir').value,lines=await recognize(c,d==='h'?'6':'5');
+    hl[cur]=(hl[cur]||[]).concat([r]);drawHl();
+    addSnip(cur,polish(lines,opts()));toast('OCRで抜き出しました（誤りがないか確認してください）');
+  }catch(e){ocrFail(e)}
+  finally{ocrBusy=false}
 }
 function addSnip(page,text){snips.push({id:Date.now()+Math.random(),page,text});renderSnips(true)}
 function renderSnips(focusLast){
@@ -480,9 +542,10 @@ const dz=$('drop');
 ['dragleave','drop'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.remove('over')}));
 dz.addEventListener('drop',e=>openFile(e.dataTransfer.files[0]));
 $('pwForm').addEventListener('submit',e=>{e.preventDefault();load($('pw').value)});
-OPT_KEYS.forEach(k=>$(k).addEventListener('change',k==='optVt'?()=>{saveOpts();applyVt()}:optChanged));
+OPT_KEYS.forEach(k=>$(k).addEventListener('change',k==='optVt'||k==='ocrDir'?()=>{saveOpts();applyVt()}:optChanged));
 $('range').addEventListener('input',()=>{if(pages.length&&!edited)compose();else if(edited)$('editNote').classList.add('on')});
 $('regen').onclick=compose;
+$('ocrPageBtn').onclick=()=>ocrPages([cur]);
 $('out').addEventListener('input',()=>{edited=true;updStats();staleCheck()});
 $('checkBtn').onclick=runCheck;
 $('copyAll').onclick=()=>copyText($('out').value);
